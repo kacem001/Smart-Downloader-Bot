@@ -1,3 +1,4 @@
+--upgrade pip
 nest_asyncio
 yt-dlp
 requests
