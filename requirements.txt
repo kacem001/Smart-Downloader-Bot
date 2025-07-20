@@ -1,4 +1,3 @@
-nest_asyncio
 yt-dlp
 requests
 python-telegram-bot
