@@ -1,6 +1,5 @@
 import os
 import re
-import yt_dlp
 import logging
 import requests
 from telegram import (
@@ -163,7 +162,7 @@ MESSAGES = {
         "choose_mp3_mp4": "🎵 オーディオ (MP3) または 🎬 ビデオ (MP4)?",
         "downloading_now": "⏳ ファイルをダウンロードしています。お待ちください...",
         "download_failed": "❌ ダウンロードに失敗しました。リンクを確認するか、後で再試行してください。",
-        "help": "ℹ️ Facebook、TikTok،Instagram،YouTube、Pinterest、またはSnapchatのリンクを送信してください。",
+        "help": "ℹ️ Facebook、TikTok、Instagram、YouTube、Pinterest、またはSnapchatのリンクを送信してください。",
         "back": "⬅️ 戻る",
         "change_language": "🌐 言語を変更",
         "feature_soon": "✨ さらなる機能がまもなく追加されます！",
@@ -322,6 +321,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # هذه الدالة الآن تعالج فقط الأزرار (الصفحة الرئيسية، إعدادات، مشاركة، الخ)
     lang = context.user_data.get("lang", "ar")
     txt = update.message.text.strip()
     user_id = update.effective_user.id
@@ -398,19 +398,32 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
         return
-    await handle_text(update, context)
+
+async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # هذه الدالة تعالج الردود من الأزرار الخاصة بالاختيار (MP4/MP3/back)
+    lang = context.user_data.get("lang", "ar")
+    txt = update.message.text.strip()
+    user_id = update.effective_user.id
+    add_user(user_id)
+    if txt in ["🎬 MP4", "🎵 MP3"]:
+        url = context.user_data.get("last_url", "")
+        platform = context.user_data.get("last_platform", "")
+        as_audio = txt == "🎵 MP3"
+        await download_and_send_api(update, context, url, lang, platform, as_audio=as_audio)
+        return
+    # أي زر آخر يذهب لدالة الأزرار الأصلية
+    await handle_menu(update, context)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # هذه الدالة تعالج أي نص غير زر (روابط، رسائل عادية، الخ)
     lang = context.user_data.get("lang", "ar")
     text = update.message.text.strip()
     user_id = update.effective_user.id
     add_user(user_id)
-
     if "facebook.com/share/p/" in text:
         text = resolve_facebook_share_link(text)
     if "pin.it" in text:
         text = resolve_pinterest_shortlink(text)
-
     if context.user_data.get("report_mode"):
         context.user_data["report_mode"] = False
         for admin_id in ADMINS:
@@ -420,7 +433,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard(lang)
         )
         return
-
     if context.user_data.get("broadcast_mode"):
         if text == get_message(lang, "cancel") or text == get_message(lang, "back"):
             context.user_data["broadcast_mode"] = False
@@ -439,7 +451,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=settings_keyboard(lang, user_id in ADMINS)
         )
         return
-
     if text == get_message(lang, "back"):
         await update.message.reply_text(
             get_message(lang, "choose_platform"),
@@ -453,7 +464,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     context.user_data["last_url"] = url
     context.user_data["last_platform"] = platform
-
     if platform == "Pinterest":
         await download_and_send_pinterest(update, context, url, lang)
     else:
@@ -461,20 +471,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_message(lang, "choose_mp3_mp4"),
             reply_markup=ReplyKeyboardMarkup([["🎬 MP4", "🎵 MP3"], [get_message(lang, "back")]], resize_keyboard=True)
         )
-
-async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get("lang", "ar")
-    txt = update.message.text.strip()
-    user_id = update.effective_user.id
-    add_user(user_id)
-
-    if txt in ["🎬 MP4", "🎵 MP3"]:
-        url = context.user_data.get("last_url", "")
-        platform = context.user_data.get("last_platform", "")
-        as_audio = txt == "🎵 MP3"
-        await download_and_send(update, context, url, lang, platform, as_audio=as_audio)
-        return
-    await handle_menu(update, context)
 
 async def download_and_send_pinterest(update, context, url, lang):
     await update.message.reply_text(get_message(lang, "downloading_now"), reply_markup=remove_keyboard())
@@ -492,7 +488,6 @@ async def download_and_send_pinterest(update, context, url, lang):
                 media.append(InputMediaPhoto(open(file_path, "rb")))
             else:
                 media.append(InputMediaPhoto(open(file_path, "rb")))
-        # تقسيم الميديا إلى مجموعات (10 أو أقل)
         while media:
             batch = media[:10]
             media = media[10:]
@@ -512,74 +507,74 @@ async def download_and_send_pinterest(update, context, url, lang):
         return
     await update.message.reply_text(get_message(lang, "download_failed"), reply_markup=home_platform_keyboard(lang))
 
-async def download_and_send(update, context, url, lang, platform=None, as_audio=False):
+async def download_and_send_api(update, context, url, lang, platform=None, as_audio=False):
     await update.message.reply_text(get_message(lang, "downloading_now"), reply_markup=remove_keyboard())
     user_id = update.effective_user.id
     user_dir = os.path.join(DOWNLOAD_DIR, str(user_id))
     os.makedirs(user_dir, exist_ok=True)
-    file_path = None
-    success = False
-
-    ydl_opts = {
-        "outtmpl": f"{user_dir}/%(title).40s.%(ext)s",
-        "format": "bestaudio/best" if as_audio else "bestvideo+bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "nocheckcertificate": True,
+    api_url = "https://instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com/get-info-rapidapi"
+    headers = {
+        "x-rapidapi-key": "91b3bedaa9msh8c53ea2dc42d6cbp1bbd81jsn6c2287b48a07",
+        "x-rapidapi-host": "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com"
     }
-    if as_audio:
-        ydl_opts["extract_audio"] = True
-        ydl_opts["audio_format"] = "mp3"
-        ydl_opts["audio_quality"] = "192K"
-        ydl_opts["merge_output_format"] = "mp3"
-    else:
-        ydl_opts["merge_output_format"] = "mp4"
-
+    params = {"url": url}
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if "entries" in info:
-                info = info["entries"][0]
-            file_path = ydl.prepare_filename(info)
-            base, _ = os.path.splitext(file_path)
-            if as_audio:
-                for ext in ["mp3", "m4a"]:
-                    candidate = f"{base}.{ext}"
-                    if os.path.exists(candidate):
-                        file_path = candidate
-                        break
-            else:
-                for ext in ["mp4", "mkv", "webm"]:
-                    candidate = f"{base}.{ext}"
-                    if os.path.exists(candidate):
-                        file_path = candidate
-                        break
-            if os.path.exists(file_path):
-                success = True
-    except Exception as e:
-        logger.error(f"yt-dlp failed: {e}")
-
-    if success and file_path and os.path.exists(file_path):
-        ext = os.path.splitext(file_path)[-1].lower()
-        try:
-            if ext in (".mp4", ".mkv", ".webm"):
-                await update.message.reply_video(video=open(file_path, "rb"))
-            elif ext in (".jpg", ".png", ".jpeg"):
-                await update.message.reply_photo(photo=open(file_path, "rb"))
-            elif ext in (".mp3", ".m4a"):
-                await update.message.reply_audio(audio=open(file_path, "rb"))
-            else:
-                await update.message.reply_document(document=open(file_path, "rb"))
-            await update.message.reply_text(get_message(lang, "feature_soon"), reply_markup=home_platform_keyboard(lang))
-        except Exception as ex:
-            logger.error(f"Send file error: {ex}")
+        response = requests.get(api_url, headers=headers, params=params, timeout=30)
+        data = response.json()
+        files = []
+        if "media" in data:
+            for item in data["media"]:
+                media_url = item.get("url")
+                media_type = item.get("type", "")
+                ext = ".mp4" if "video" in media_type else ".mp3" if "audio" in media_type else ".jpg"
+                file_name = os.path.join(user_dir, f"media_{user_id}_{len(files)}{ext}")
+                try:
+                    media_data = requests.get(media_url, timeout=30).content
+                    with open(file_name, "wb") as f:
+                        f.write(media_data)
+                    files.append((file_name, media_type))
+                except Exception as e:
+                    logger.error(f"Error downloading media: {e}")
+        elif "url" in data:
+            media_url = data["url"]
+            ext = ".mp4"
+            if "mp3" in media_url:
+                ext = ".mp3"
+            elif "jpg" in media_url or "png" in media_url:
+                ext = ".jpg"
+            file_name = os.path.join(user_dir, f"media_{user_id}_0{ext}")
+            try:
+                media_data = requests.get(media_url, timeout=30).content
+                with open(file_name, "wb") as f:
+                    f.write(media_data)
+                files.append((file_name, "video" if ext == ".mp4" else "audio" if ext == ".mp3" else "photo"))
+            except Exception as e:
+                logger.error(f"Error downloading media: {e}")
+        else:
             await update.message.reply_text(get_message(lang, "download_failed"), reply_markup=home_platform_keyboard(lang))
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-        return
-    else:
+            return
+        if files:
+            for file_path, media_type in files:
+                try:
+                    if media_type == "video":
+                        await update.message.reply_video(video=open(file_path, "rb"))
+                    elif media_type == "audio":
+                        await update.message.reply_audio(audio=open(file_path, "rb"))
+                    else:
+                        await update.message.reply_photo(photo=open(file_path, "rb"))
+                except Exception as ex:
+                    logger.error(f"Send file error: {ex}")
+                    await update.message.reply_text(get_message(lang, "download_failed"), reply_markup=home_platform_keyboard(lang))
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            await update.message.reply_text(get_message(lang, "feature_soon"), reply_markup=home_platform_keyboard(lang))
+            return
+        else:
+            await update.message.reply_text(get_message(lang, "download_failed"), reply_markup=home_platform_keyboard(lang))
+    except Exception as e:
+        logger.error(f"API error: {e}")
         await update.message.reply_text(get_message(lang, "download_failed"), reply_markup=home_platform_keyboard(lang))
 
 async def broadcast(admin_id, context, lang):
@@ -637,8 +632,15 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    # معالج الأزرار: جميع الأزرار التي تظهر للمستخدم (الصفحة الرئيسية، إعدادات، مشاركة، رجوع، منصات، خيارات الصوت/الفيديو)
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^(🏠 الصفحة الرئيسية|⚙️ الإعدادات|🔗 مشاركة البوت|🚩 الإبلاغ عن مشكلة|🌐 تغيير اللغة|⬅️ رجوع|رجوع|Back|🎬 MP4|🎵 MP3|Facebook|TikTok|Instagram|YouTube|Pinterest|Snapchat|~Instagram~|~إنستجرام~)$"),
+        handle_reply_buttons)
+    )
+    # معالج الصور والفيديو
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
+    # معالج أي نص آخر غير زر (روابط، رسائل عادية)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("بوت التحميل الاحترافي يعمل الآن...")
     app.run_polling()
 
